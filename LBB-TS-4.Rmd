@@ -1,0 +1,352 @@
+---
+title: "Australian Domestic Airline Traffic Time Series"
+author: "Takdir Zulhaq Dessiaming"
+date: "2022-09-14"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      collapsed: true
+    theme: united
+    highlight: zenburn
+    df_print: paged
+---
+
+# INTRODUCTION
+
+Covers Regular Public Transport (RPT) air services between Australian airports. Data is by city pair and month for passengers carried, aircraft trips, great circle distance between two airports (connected to city), Revenue Passenger Kilometres (RPKs), Available Seat Kilometres (ASKs) and Seats.
+
+Covers monthly data from January 1984 to December 2019.
+
+This dataset was downloaded from Kaggle (https://www.kaggle.com/datasets/alphajuliet/au-dom-traffic). It contains monthly aggregated data of flights between Australian cities. The CSV file has the following fields: City1, City2, Month, Passenger_Trips, Aircraft_Trips, Passenger_Load_Factor, Distance_GC_(km), RPKs (revenue per km), ASKs (available seat-km), Seats, Year, Month_num. See the link for full information.
+
+**Our Goal is to apply Time Series model in this dataset. We will predict/forecast the data for 1 year ahead.** 
+
+# IMPORT LIBRARY
+
+```{r message=FALSE, warning=FALSE}
+library(dplyr) # data wrangling
+library(lubridate) # date manipulation
+library(forecast) # time series library
+library(TTR) # for Simple moving average function
+library(tseries) # adf.test
+library(fpp) # usconsumtion
+library(TSstudio) 
+library(MLmetrics) # MAPE (Mean Absolute Percentage Error)
+library(tidyverse) 
+library(zoo)
+```
+
+# IMPORT DATA
+```{r}
+df <- read.csv("audomcitypairs-201912.csv")
+df <- as.data.frame(df)
+df
+```
+
+Because our data is table class, we have to convert it to dataframe using as.data.frame.
+
+```{r}
+anyNA(df)
+```
+
+Great, no missing Value here.
+
+As we can see, our data contains many columns. In this analysis for Time Series, let's just use 2 columns, that is the target forecast column and the date.
+
+We see the year and month column are separated, so we will adjust these to yyyy-mm-dd (year-month-day) format.
+
+We will choose `Aircraft_Trips` as our target forecast.
+
+# DATA CLEANING
+```{r}
+
+df <- df %>% 
+  select(Aircraft_Trips, Year, Month_num) %>% 
+  group_by(Year, Month_num) %>% 
+  summarise(Aircraft_Trips = sum(Aircraft_Trips)) %>% 
+  ungroup()
+df$day <- 1
+```
+
+First we summarise each month for `Aircraft_Trips`, and make them grouping by Year and Month, so we will see them in monthly. 
+
+And then we add one column for day, and it contain just 1. Because this data is monthly, let's say it's start from 1st day in each month.
+
+```{r}
+df$date <- paste(df$Year, df$Month_num, df$day, sep="-") %>% ymd() %>% as.Date()
+
+df <- df %>%
+  select(c(date, Aircraft_Trips)
+  )
+df
+```
+
+Then we combine 3 columns (year, month, day) into 1 column that contain yyyy-mm-dd format.
+
+And then we just take `Aircraft_Trips` and `date`.
+
+# TIME SERIES
+
+For Time Series analysis, we make our dataframe to Time Series format for analysis.
+
+```{r}
+df_ts <- ts(df$Aircraft_Trips, start = c(1984,1), frequency = 12)
+df_ts %>% autoplot()
+```
+
+We use "start = c(1984,1)", it means our data start from 1984-january.
+
+We use "frequency = 12" because this data is monthly, so it means, the Time Series can read our data for Monthly.
+
+Then let's see the trend of our data.
+
+## DECOMPOSITION
+
+Decomposition is a stage in time series analysis that is used to describe several components in time series data.
+
+💡Components in the time series:
+
+* **Trend** : data pattern in general, tends to increase or decrease. If there is a trend there is still a pattern, it means that there is a pattern that has not been decomposed properly.
+* **Seasonal** : seasonal patterns that form repeating patterns over a fixed period of time
+* **Error/Reminder/Random** : patterns that cannot be caught in trend and seasonal
+
+Before doing forecasting modeling, we need to observe the time series object from the `decompose` result. The main idea of decompose is to describe the three components of the object ts (trend, seasonal, residual).
+
+```{r}
+knitr::include_graphics("seasonaltypes.gif")
+```
+
+Based on visualize, we can say that our data is "additive".
+
+```{r}
+decompose(x = df_ts, type = "additive") %>% autoplot()
+```
+
+We use "decompose()", and we see that our data above has a trend that we can be said to be an uptrend, and also it has seasonal.
+
+## CROSS VALIDATION
+
+```{r}
+test_df <- tail(df_ts, 24)
+train_df <- head(df_ts, -length(test_df))
+```
+
+We split our data to test and train data. the test data contain last 2 year of our data which is 2019 january to december.
+
+Then the rest we put to train data.
+
+```{r}
+decompose(x = train_df, type = "additive") %>% autoplot()
+```
+
+# BUILD MODEL
+
+## HOLT'S WINTER EXPLONENTIAL
+
+Holt's Winter Explonential is one of the method to build model we use. By default the parameters `alpha`, `beta`, and `gamma` are **NULL**, where if we do not define the value, then the `HolWinters()` model will search for the parameter value until it gets the most optimal value. So if the time series object does not contain trends and seasonal, parameters `beta` and `gamma` must be changed to **FALSE**.
+
+This model consider the Time Series data if it has trend or seasonal or not. We use this because from our analysis, our data has trend and seasonal, so let's just the `alpha`, `beta`, and `gamma` define the value itself.
+
+```{r}
+model_hw <- HoltWinters(x = train_df)
+```
+
+## ARIMA 
+
+ARIMA is a combination of two methods, namely *Auto Regressive* (AR) and *Moving Average* (MA). The I describes *Integrated*. The main purpose of ARIMA is to perform autocorrelation on data.
+
+Because our data has seasonal pattern, let's use SARIMA method.
+
+### SEASONAL ARIMA (SARIMA)
+
+Seasonal Arima is an Arima method where the existing time series objects have a seasonal pattern. The stages in doing modeling using SARIMA are the same as when making ARIMA modeling.
+
+If we want to use ARIMA/SARIMA model, first we do is to check our data, is it stationary or not. ARIMA/SARIMA need the stationary data. Time series stationarity means that the time series data that we have has neither trend nor seasonality and has constant variance.
+
+H0 : data is not stationary
+H1 : stationary data
+
+> we expect p-value < alpha, so the data pattern is stationary
+
+```{r}
+adf.test(train_df)
+```
+
+The data not stationary yet. So we do Differencing to our data.
+
+To make the data stationary, the most common way is to do differencing `diff`, which is to subtract the current data from the previous data. Sometimes, depending on the complexity of the data, the number of differencing can be more than 1 time.
+
+If we use the SARIMA model, an additional step is needed when differencing seasonal data, namely **differencing according to the frequency pattern** of time series data to eliminate seasonal patterns.
+
+```{r}
+diff(train_df, lag = 12) %>% # differencing the seasonal 1x, we follow the frequency we have
+  diff() %>%  # differencing the trend 1x
+  adf.test()
+```
+ 
+Now the data is stationary.
+ 
+### MODEL FITTING
+
+### AUTO.ARIMA
+
+Now we use auto.arima to make ARIMA model with automatic
+
+```{r}
+model_auto_sarima <- auto.arima(train_df, seasonal = T)
+model_auto_sarima
+```
+
+### ARIMA MANUAL
+
+```{r}
+diff(train_df, lag = 12) %>% 
+  diff() %>% 
+  tsdisplay(lag.max = 36)
+```
+ 
+We can tuning the model with manual. We have to define the p,d,q
+
+We see p in PACF, q in ACF, and d is how many times the data need to differencing. The seasonal let's just follow the auto.arima.
+
+for the entire data determine p and q we look at the first 5 lags that come out from dotted line.
+
+*p: 1/2
+* d: 1
+* Q: 1/2
+ 
+```{r}
+model_sarima1 <- Arima(train_df, order = c(1,1,1), seasonal = c(1,0,0))
+model_sarima2 <- Arima(train_df, order = c(1,1,2), seasonal = c(1,0,0))
+model_sarima3 <- Arima(train_df, order = c(2,1,1), seasonal = c(1,0,0))
+
+model_sarima1$aic
+model_sarima2$aic
+model_sarima3$aic
+model_auto_sarima$aic
+```
+```{r}
+MAPE(model_hw$fitted, train_df)
+MAPE(model_sarima1$fitted, train_df)
+MAPE(model_sarima2$fitted, train_df)
+MAPE(model_sarima3$fitted, train_df)
+MAPE(model_auto_sarima$fitted, train_df)
+```
+ 
+AIC means information loss. So the bigger the value, more information loss we have.
+
+But if we see MAPE (Mean Absolute Percentage Error), we can know how much the percent error value of our prediction. We see `model_auto_sarima` is the smallest
+
+So we choose auto sarima model, because it has small MAPE and AIC (although AIC not too much different than others).
+ 
+
+## STLM (Seasonal Trend with Loess Model)
+
+When in normal decomposition, in obtaining trend components by way of central moving average (CMA) where conceptually each data that wants to be averaged is given the same weight according to the set order. Because of averaging the middle data, the result is that we lose the initial data and the final data, so that some information is lost. There is one way to decompose data but still maintain information from all the data we have, which is by using **STL (Seasonal Trend with Loess)**. STL will conceptually perform smoothing on the neighboring data of each observation by giving a heavier weight to the data that is close to the observed data. The disadvantage of STL is that it can only decompose on additive data, when there is multiplicative data, it can use `log()` transformation.
+ 
+
+```{r}
+model_arima <- stlm(y = train_df, s.window = 12, method = "arima")
+```
+
+# FORECAST
+
+After we build the model, we have 2 model that are `model_auto_sarima` and `model_arima` (stlm). We will predict 2 year ahead from train data, so we put h = 24(month)/ length of our test data.
+
+```{r}
+length(test_df)
+fc_sarima <- forecast(model_auto_sarima, h=24)
+fc_arima <- forecast(model_arima, h = 24)
+```
+
+# VISUALIZE
+
+```{r}
+train_df %>% 
+  autoplot()+
+  autolayer(test_df, series = "Data Test")+
+  autolayer(fc_sarima$mean, series = "Auto SARIMA Model") +
+  autolayer(fc_arima$mean,series = "ARIMA (STLM) MODEL")
+```
+
+💡 Insight :    
+
+As we can see, both model late in predicting the data.
+
+But if we see, `model_auto_sarima` is good enough predicting in the first than ARIMA (STLM). 
+
+Now let's see the MAPE, to choose our model that will we use.
+
+```{r}
+data.frame(AUTO_SARIMA = MAPE(fc_sarima$mean, test_df), ARIMA_STLM = MAPE(fc_arima$mean, test_df))
+```
+
+Based on MAPE above, we want the smallest MAPE. So we choose `model_auto_sarima`.
+
+# ASSUMPTION TEST
+
+The assumptions in the time series are tested to measure whether the residuals obtained from the modeling results are good enough to describe and capture information in the data. Why use residual data? Because by using residual data, we can get information from the actual data as well as from the prediction results using the model. A good forecasting method produces the following residual values:
+
+1. Uncorrelated residuals. If there are correlated residuals, it means that there is still information left that should be used to calculate forecast results.    
+2. Residuals have a mean of 0.
+
+## AUTOCORRELATION TEST
+
+> $H_0$: residual has no-autocorrelation
+
+> $H_1$: residual has autocorrelation
+
+**desired p-value > 0.05 (alpha), no-autocorrelation**
+
+```{r}
+Box.test(model_auto_sarima$residuals, type = "Ljung-Box")
+```
+
+> in the Ljung-Box test above, p-value > alpha, where 0.5193 > 0.05 means that it fails to reject H0, meaning that there is no autocorrelation in the residual/error in the data
+
+## NORMALITY TEST
+
+> $H_0$: residual spread normally
+
+> $H_1$: residuals are not normally distributed
+
+**desired p-value > 0.05 (alpha), residuals are normally distributed**
+
+```{r}
+hist(model_auto_sarima$residuals, breaks = 100)
+```
+
+```{r}
+shapiro.test(model_auto_sarima$residuals)
+```
+> because p-value < alpha, where 2.2e-167 < 0.05, then the residuals are not normally distributed
+
+- If the above assumption is not met, what can be done is
+  + Adding data
+  + Using other time series models
+
+# CONCLUSION
+
+Based on our analysis above, we have good enough model to use. `model_auto_sarima` is the good model between all model we build. 
+
+- It has small AIC, that means that model have small information loss
+- It has small MAPE (Mean Absolute Percentage Error), means how much error does the model have for prediction
+- it has no autocorrelation
+
+Based on that i think it's good enough to predict the unseen data. The disadvantages of this model is the model don't have normal distribution yet. But we can just add more data or use other time series model.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
